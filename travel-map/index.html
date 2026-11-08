@@ -199,7 +199,6 @@ function addMarkers(group) {
   return markers;
 }
 const globeMarkers = addMarkers(g);
-const flatMarkers = addMarkers(flatGroup);
 const options = document.getElementById('placeOptions');
 for (const f of features) {
   const option = document.createElement('option');
@@ -265,10 +264,6 @@ function render() {
       .attr('cx', point[0]).attr('cy', point[1])
       .attr('r', 3 + 2 * markerFade)
       .attr('opacity', markerFade);
-  });
-  flatMarkers.each(function(d) {
-    const point = flatProjection(locations.get(d.properties.id));
-    d3.select(this).attr('cx', point[0]).attr('cy', point[1]);
   });
   const point = flatProjection(centre);
   centreDot.attr('cx', point[0]).attr('cy', point[1]);
