@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Travel Map</title>
+<style>
+  :root {
+    --bg: #f7f6f3; --land: #e4e2dc; --line: #f7f6f3; --outline: #b9b5ac;
+    --ink: #2b2a27; --muted: #8b877e;
+    --visited: #18a999; --hover: #cfccc4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161616; --land: #2a2a2a; --line: #161616; --outline: #555;
+      --ink: #e8e6e1; --muted: #8a8780;
+      --visited: #40d6b5; --hover: #3a3a3a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; overflow: hidden; }
+  svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+  .maps { height: 100vh; height: 100dvh; display: grid; grid-template-rows: 58% 42%; }
+  .map-view { min-height: 0; overflow: hidden; position: relative; }
+  .map-view + .map-view { border-top: 1px solid var(--outline); }
+  #flat-map { cursor: pointer; }
+  .view-footprint { fill: #469bd0; fill-opacity: .07; stroke: var(--ink); stroke-width: 1.3; stroke-dasharray: 5 4; pointer-events: none; }
+  .micro-marker { stroke: var(--ink); stroke-width: 1.2; cursor: pointer; }
+  .micro-marker:focus { outline: none; stroke: #e77b45; stroke-width: 3; }
+  .find-place { position: fixed; top: 18px; right: 20px; width: min(190px, 43vw); }
+  .find-place input { width: 100%; padding: 7px 10px; border: 1px solid var(--outline); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
+  .view-centre { fill: var(--ink); stroke: var(--bg); stroke-width: 1.5; pointer-events: none; }
+  svg:active { cursor: grabbing; }
+  .ocean { fill: #dcecf0; stroke: var(--outline); stroke-width: 1; }
+  .globe-shade { pointer-events: none; }
+  @media (prefers-color-scheme: dark) { .ocean { fill: #192e39; } }
+  .label { max-width: calc(100vw - 32px); text-align: center; }
+  .region { fill: var(--land); stroke: var(--line); stroke-width: .5; vector-effect: non-scaling-stroke; }
+  .region:hover { fill: var(--hover); }
+  .region.visited { fill: var(--visited); }
+  .region.visited:hover { filter: brightness(1.15); }
+  .outline { fill: none; stroke: var(--outline); stroke-width: .8; vector-effect: non-scaling-stroke; pointer-events: none; }
+
+  .panel { position: fixed; top: 20px; left: 20px; user-select: none; }
+  .panel h1 { margin: 0 0 10px; font-size: 13px; font-weight: 600; letter-spacing: .02em; }
+  .stat { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .num { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 22px; }
+
+  .label { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    color: var(--muted); pointer-events: none; }
+  .label b { color: var(--ink); font-weight: 500; }
+</style>
+</head>
+<body>
+<main class="maps">
+  <section class="map-view"><svg id="map" aria-label="Interactive globe. Drag to rotate, scroll or pinch to zoom."></svg></section>
+  <section class="map-view"><svg id="flat-map" aria-label="Equal Earth overview. Marks and colours are synced with the globe."></svg></section>
+</main>
+
+<form class="find-place" id="findPlace" role="search">
+  <input id="placeSearch" list="placeOptions" placeholder="Find a country or region" aria-label="Find a country or region" autocomplete="off">
+  <datalist id="placeOptions"></datalist>
+</form>
+<div class="panel">
+  <div class="stat"><span class="dot" style="background:var(--visited)"></span><span class="num" id="nVisited" aria-label="Visited countries and territories" title="Visited countries and territories">0</span><span>visited countries</span></div>
+</div>
+
+<div class="label" id="label">Drag globe to rotate · Click either map to colour · Shift-click to clear</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script src="data/regions.js"></script>
+<script src="data/colors.js"></script>
+<script src="data/visited.js"></script>
+<script>
+const KEY = 'travel-map:v1';
+const COLOR_KEY = 'travel-map:colors:v1';
+const palette = ['#13a89e', '#e77b45', '#8980de', '#d65386', '#469bd0', '#87ab36', '#dfb52d', '#ab67b5', '#ce604e', '#397fba', '#68964b', '#b65b86'];
+const READONLY = new URLSearchParams(location.search).has('readonly');
+let customColors = {};
+let marks = {};
+if (READONLY) {
+  const snapshot = window.VISITED || {};
+  marks = { ...(snapshot.marks || {}) };
+  customColors = { ...(snapshot.colors || {}) };
+} else {
+  try {
+    const stored = JSON.parse(localStorage.getItem(COLOR_KEY));
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) customColors = stored;
+  } catch {}
+  try { marks = JSON.parse(localStorage.getItem(KEY)) || {}; } catch {}
+}
+marks = Object.fromEntries(Object.entries(marks).filter(([, state]) => state === 'visited'));
+const save = () => {
+  if (READONLY) return;
+  try { localStorage.setItem(KEY, JSON.stringify(marks)); localStorage.setItem(COLOR_KEY, JSON.stringify(customColors)); } catch {}
+};
+const HINT = READONLY
+  ? 'Read-only view · Drag globe to rotate · Scroll or pinch to zoom'
+  : document.getElementById('label').innerHTML;
+if (READONLY) {
+  document.getElementById('label').innerHTML = HINT;
+  document.title = 'Travel Map · Read-only';
+}
+
+const topo = window.REGIONS;
+const geom = topo.objects.regions;
+const features = topojson.feature(topo, geom).features;
+const vatican = features.find(f => f.properties.id === 'VAT');
+if (vatican) vatican.properties.name = 'Vatican City';
+const neighbors = topojson.neighbors(geom.geometries);
+const regionColors = TravelColors.regionColors(neighbors);
+const colorsById = new Map(features.map((f, i) => [f.properties.id, regionColors[i]]));
+
+const svg = d3.select('#map');
+const g = svg.append('g');
+const sphere = { type: 'Sphere' };
+const ocean = g.append('path').datum(sphere).attr('class', 'ocean');
+const projection = d3.geoOrthographic().rotate([-10, -25, 0]).clipAngle(90).precision(0.3);
+let baseScale = 1;
+let previousTransform = d3.zoomIdentity;
+const path = d3.geoPath(projection);
+
+const regions = g.selectAll('path.region')
+  .data(features).join('path')
+  .attr('class', 'region')
+  .on('click', (e, d) => {
+    if (READONLY) return;
+    const id = d.properties.id;
+    if (e.shiftKey) {
+      delete marks[id];
+      delete customColors[id];
+    } else {
+      if (marks[id] === 'visited') {
+        const current = customColors[id] || colorsById.get(id);
+        const index = features.indexOf(d);
+        const used = new Set(neighbors[index].filter(i => marks[features[i].properties.id] === 'visited')
+          .map(i => customColors[features[i].properties.id] || regionColors[i]));
+        const start = palette.indexOf(current);
+        let next;
+        for (let offset = 1; offset <= palette.length; offset++) {
+          const candidate = palette[(start + offset) % palette.length];
+          if (candidate !== current && !used.has(candidate)) { next = candidate; break; }
+        }
+        if (!next) {
+          let hue = 0;
+          do { next = `hsl(${hue++} 65% 48%)`; } while (next === current || used.has(next));
+        }
+        customColors[id] = next;
+      }
+      marks[id] = 'visited';
+    }
+    save(); paint(); showLabel(d);
+  })
+  .on('mouseenter', (e, d) => showLabel(d))
+  .on('mouseleave', () => label.innerHTML = HINT);
+
+// National borders drawn on top, so split countries still read as one country.
+const outlines = g.append('path').attr('class', 'outline')
+  .datum(topojson.mesh(topo, geom, (a, b) => a.properties.country !== b.properties.country));
+
+const gradient = svg.append('defs').append('radialGradient')
+  .attr('id', 'globe-light').attr('cx', '35%').attr('cy', '30%').attr('r', '70%');
+gradient.append('stop').attr('offset', '40%').attr('stop-color', '#102d40').attr('stop-opacity', 0);
+gradient.append('stop').attr('offset', '100%').attr('stop-color', '#102d40').attr('stop-opacity', 0.24);
+const shade = g.append('path').datum(sphere).attr('class', 'globe-shade').attr('fill', 'url(#globe-light)');
+// Both views use the same features, marking handlers and colour state.
+const flatSvg = d3.select('#flat-map');
+const flatProjection = d3.geoEqualEarth();
+const flatPath = d3.geoPath(flatProjection);
+const flatGroup = flatSvg.append('g');
+const flatOcean = flatGroup.append('path').datum(sphere).attr('class', 'ocean');
+const flatRegions = flatGroup.selectAll('path.region').data(features).join('path')
+  .attr('class', 'region')
+  .on('click', regions.on('click'))
+  .on('mouseenter', regions.on('mouseenter'))
+  .on('mouseleave', regions.on('mouseleave'));
+const flatOutlines = flatGroup.append('path').datum(outlines.datum()).attr('class', 'outline');
+const footprint = flatGroup.append('path').attr('class', 'view-footprint');
+const centreDot = flatGroup.append('circle').attr('class', 'view-centre').attr('r', 3);
+// Tiny countries retain their own marks even when their polygons are smaller than a pixel.
+const smallPlaces = features.filter(f => (!f.properties.parent || f.properties.id === 'HKG') && d3.geoArea(f) * 6371 * 6371 < 5000);
+const locations = new Map(smallPlaces.map(f => [f.properties.id, d3.geoCentroid(f)]));
+function addMarkers(group) {
+  const markers = group.selectAll('circle.micro-marker').data(smallPlaces).join('circle')
+    .attr('class', 'region micro-marker').attr('r', 5)
+    .attr('tabindex', READONLY ? null : 0).attr('role', READONLY ? 'img' : 'button')
+    .attr('aria-label', d => d.properties.name)
+    .on('click', regions.on('click'))
+    .on('mouseenter', regions.on('mouseenter'))
+    .on('mouseleave', regions.on('mouseleave'))
+    .on('focus', (e, d) => showLabel(d))
+    .on('keydown', (e, d) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); regions.on('click')(e, d); }
+    });
+  markers.append('title').text(d => d.properties.name);
+  return markers;
+}
+const globeMarkers = addMarkers(g);
+const flatMarkers = addMarkers(flatGroup);
+const options = document.getElementById('placeOptions');
+for (const f of features) {
+  const option = document.createElement('option');
+  option.value = f.properties.name + (f.properties.parent ? ' · ' + f.properties.country : '');
+  option.dataset.id = f.properties.id;
+  options.append(option);
+}
+function findPlace() {
+  const input = document.getElementById('placeSearch');
+  const option = Array.from(options.children).find(o => o.value.toLowerCase() === input.value.trim().toLowerCase());
+  if (!option) return;
+  const feature = features.find(f => f.properties.id === option.dataset.id);
+  const centre = d3.geoCentroid(feature);
+  projection.rotate([-centre[0], -centre[1], 0]);
+  previousTransform = d3.zoomIdentity.scale(4);
+  svg.call(zoom.transform, previousTransform);
+  showLabel(feature);
+  input.blur();
+}
+document.getElementById('findPlace').onsubmit = e => { e.preventDefault(); findPlace(); };
+document.getElementById('placeSearch').onchange = findPlace;
+const label = document.getElementById('label');
+function showLabel(d) {
+  const p = d.properties, s = marks[p.id];
+  label.textContent = `${p.name}${p.parent ? ' · ' + p.country : ''}${s ? ' · ' + s : ''}`;
+}
+
+function paint() {
+  d3.selectAll('.region').classed('visited', d => marks[d.properties.id] === 'visited')
+    .style('fill', d => marks[d.properties.id] === 'visited' ? (customColors[d.properties.id] || colorsById.get(d.properties.id)) : null);
+  const visited = new Set();
+  for (const f of features) {
+    const p = f.properties, s = marks[p.id];
+    if (s === 'visited') visited.add(p.country);
+  }
+  document.getElementById('nVisited').textContent = visited.size;
+
+
+}
+
+function render() {
+  ocean.attr('d', path);
+  regions.attr('d', path);
+  outlines.attr('d', path);
+  shade.attr('d', path);
+  const centre = projection.invert(projection.translate());
+  // The overview indicator narrows as the globe is zoomed in.
+  const radius = Math.asin(1 / previousTransform.k) * 180 / Math.PI;
+  footprint.datum(d3.geoCircle().center(centre).radius(radius).precision(2)()).attr('d', flatPath);
+  globeMarkers.each(function(d) {
+    const location = locations.get(d.properties.id);
+    const visible = d3.geoDistance(centre, location) < Math.PI / 2;
+    const point = projection(location);
+    d3.select(this).attr('display', visible ? null : 'none').attr('cx', point[0]).attr('cy', point[1]);
+  });
+  flatMarkers.each(function(d) {
+    const point = flatProjection(locations.get(d.properties.id));
+    d3.select(this).attr('cx', point[0]).attr('cy', point[1]);
+  });
+  const point = flatProjection(centre);
+  centreDot.attr('cx', point[0]).attr('cy', point[1]);
+}
+
+const zoom = d3.zoom().scaleExtent([1, 12]).clickDistance(4).on('zoom', e => {
+  const transform = e.transform;
+  // A drag rotates the projection; zoom changes its radius, keeping the globe centred.
+  if (transform.k === previousTransform.k) {
+    const rotation = projection.rotate();
+    const degreesPerPixel = 180 / (Math.PI * projection.scale());
+    projection.rotate([
+      rotation[0] + (transform.x - previousTransform.x) * degreesPerPixel,
+      Math.max(-89, Math.min(89, rotation[1] - (transform.y - previousTransform.y) * degreesPerPixel)),
+      0
+    ]);
+  }
+  previousTransform = transform;
+  projection.scale(baseScale * transform.k);
+  render();
+});
+svg.call(zoom).on('dblclick.zoom', null);
+
+function layout() {
+  const { width: w, height: h } = svg.node().getBoundingClientRect();
+  baseScale = Math.max(1, Math.min(w - 32, h - 70) / 2);
+  projection.translate([w / 2, h / 2 + 12]).scale(baseScale * previousTransform.k);
+  const { width: fw, height: fh } = flatSvg.node().getBoundingClientRect();
+  flatProjection.fitExtent([[16, 12], [Math.max(17, fw - 16), Math.max(13, fh - 46)]], sphere);
+  flatOcean.attr('d', flatPath);
+  flatRegions.attr('d', flatPath);
+  flatOutlines.attr('d', flatPath);
+  render();
+}
+addEventListener('resize', layout);
+layout(); paint();
+</script>
+</body>
+</html>
