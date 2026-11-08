@@ -249,11 +249,22 @@ function render() {
   // The overview indicator narrows as the globe is zoomed in.
   const radius = Math.asin(1 / previousTransform.k) * 180 / Math.PI;
   footprint.datum(d3.geoCircle().center(centre).radius(radius).precision(2)()).attr('d', flatPath);
+  const zoomLevel = previousTransform.k;
+  const markerFade = Math.min(1, Math.max(0, (zoomLevel - 1.8) / 0.6));
+  const { width, height } = svg.node().getBoundingClientRect();
+  const margin = 24;
   globeMarkers.each(function(d) {
     const location = locations.get(d.properties.id);
-    const visible = d3.geoDistance(centre, location) < Math.PI / 2;
     const point = projection(location);
-    d3.select(this).attr('display', visible ? null : 'none').attr('cx', point[0]).attr('cy', point[1]);
+    const onGlobe = d3.geoDistance(centre, location) < Math.PI / 2;
+    const inView = point[0] >= -margin && point[0] <= width + margin
+      && point[1] >= -margin && point[1] <= height + margin;
+    const show = markerFade > 0 && onGlobe && inView;
+    d3.select(this)
+      .attr('display', show ? null : 'none')
+      .attr('cx', point[0]).attr('cy', point[1])
+      .attr('r', 3 + 2 * markerFade)
+      .attr('opacity', markerFade);
   });
   flatMarkers.each(function(d) {
     const point = flatProjection(locations.get(d.properties.id));
